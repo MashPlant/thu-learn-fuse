@@ -1,0 +1,18 @@
+[package]
+name = "thu-learn-fuse"
+version = "0.1.0"
+authors = ["MashPlant <740678788@qq.com>"]
+edition = "2018"
+
+[dependencies]
+# its documentation says we should use version 0.4, however I cannot sucessfully select this version using cargo
+# so I will use the github version instead
+fuse = { git = "https://github.com/MashPlant/fuse-rs" }
+log = "0.4"
+env_logger = "0.7"
+libc = "0.2"
+thu-learn-helper = { path = "src/thu-learn-helper" }
+tokio = { version = "0.2", features = ["full"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+bytes = "0.5"
+openat = "0.1"

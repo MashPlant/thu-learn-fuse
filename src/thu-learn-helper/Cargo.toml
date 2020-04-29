@@ -1,0 +1,22 @@
+[package]
+name = "thu-learn-helper"
+version = "0.1.0"
+authors = ["MashPlant <740678788@qq.com>"]
+edition = "2018"
+
+[dependencies]
+reqwest = { version = "0.10", features = ["cookies", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.12"
+scraper = "0.11"
+lazy_static = "1.4"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+derive_more = { version = "0.99.0", default-features = false, features = ["from", "deref", "deref_mut"] }
+
+[features]
+blocking = ["reqwest/blocking"]
+
+[dev-dependencies]
+tokio = { version = "0.2", features = ["full"] }
