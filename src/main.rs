@@ -170,7 +170,6 @@ fn notification_content(n: Notification, mut i: u64, client: Arc<LearnHelper>) -
 fn file_content(f: File, mut i: u64, client: Arc<LearnHelper>) -> (Vec<(Cow<'static, str>, u64)>, Vec<Content>) {
   let (mut m, mut c) = (Vec::new(), Vec::new());
   let url = f.download_url();
-  println!("file_type = {}", f.file_type);
   push!(m, c, i, "描述" => f.description, "大小" => f.size, "上传时间" => f.upload_time.to_string(), "已读" => bool2str(!f.new),
     "重要" => bool2str(f.important), "访问次数" => f.visit_count.to_string(), "下载次数" => f.download_cunt.to_string());
   m.push(((f.title + "." + &f.file_type).into(), i));
@@ -346,9 +345,9 @@ impl Filesystem for LearnFS {
             (Some(&data[..file_end]), &data[file_end..])
           } else { (None, data) };
           let file = if let Some(f) = file {
-            Some((f.to_owned(), if let Ok(x) = read_file(pid, f) { x } else { return; }))
+            Some((f, if let Ok(x) = read_file(pid, f) { x } else { return; }))
           } else { None };
-          let _ = client.submit_homework(student_homework_id, content.to_owned(), file).await;
+          let _ = client.submit_homework(&student_homework_id, &content, file).await;
         });
       }
       _ => reply.error(EPERM),

@@ -1,5 +1,5 @@
 use reqwest::{blocking::{Client, ClientBuilder, multipart::{Form, Part}}};
-use std::borrow::Cow;
+use crate::{form_file, check_success};
 use crate::{parse::*, urls::*, types::*};
 
 // the inner `Client` object is public, because I don't pretty much care user modifying it
@@ -44,7 +44,7 @@ impl LearnHelper {
         let res = self.0.get(&NOTIFICATION_DETAIL(&x.id, course)).send()?.text()?;
         let href_end = res.find("\" class=\"ml-10\"").ok_or(MSG)?;
         let href_start = res[..href_end].rfind("a href=\"").ok_or(MSG)? + 8;
-        Some(PREFIX.to_string() + &res[href_start..href_end])
+        Some(PREFIX.to_owned() + &res[href_start..href_end])
       } else { None };
     }
     Ok(res)
@@ -60,28 +60,36 @@ impl LearnHelper {
       let mut res = self.0.get(&f(course)).send()?.json::<JsonWrapper2<JsonWrapper20<Homework>>>()?.object.aaData;
       for x in &mut res {
         let res = self.0.get(&x.detail_url()).send()?.text()?;
-        x.detail = HomeworkDetail::from_html(&res).ok_or("invalid homework detail format")?;
+        x.detail = parse_homework_detail(&res).ok_or("invalid homework detail format")?;
       }
       ret.append(&mut res);
     }
     Ok(ret)
   }
 
-  pub fn submit_homework(&self, student_homework: impl Into<Cow<'static, str>>, content: impl Into<Cow<'static, str>>,
-                         file: Option<(impl Into<Cow<'static, str>>, impl Into<Cow<'static, [u8]>>)>) -> Result<()> {
-    let form = Form::new().text("zynr", content).text("xszyid", student_homework).text("isDeleted", "0");
-    let form = if let Some((name, data)) = file {
-      form.part("fileupload", Part::bytes(data).file_name(name))
-    } else { form.text("fileupload", "undefined") };
-    let res = self.0.post(HOMEWORK_SUBMIT).multipart(form).send()?.text()?;
-    if res.contains("success") { Ok(()) } else { Err("failed to submit homework".into()) }
+  pub fn submit_homework(&self, student_homework: IdRef<'_>, content: IdRef<'_>, file: Option<(&str, Vec<u8>)>) -> Result<()> {
+    let form = Form::new().text("zynr", content.to_owned()).text("xszyid", student_homework.to_owned()).text("isDeleted", "0");
+    let form = form_file!(form, file);
+    check_success!(b,  self.0.post(HOMEWORK_SUBMIT).multipart(form), "failed to submit homework")
   }
 
   pub fn discussion_list(&self, course: IdRef) -> Result<Vec<Discussion>> {
     Ok(self.0.get(&DISCUSSION_LIST(course)).send()?.json::<JsonWrapper2<JsonWrapper21<_>>>()?.object.resultsList)
   }
 
-  pub fn question_list(&self, course: IdRef) -> Result<Vec<Question>> {
-    Ok(self.0.get(&QUESTION_LIST(course)).send()?.json::<JsonWrapper2<JsonWrapper21<_>>>()?.object.resultsList)
+  pub fn discussion_replies(&self, course: IdRef<'_>, discussion: IdRef<'_>, discussion_board: IdRef<'_>) -> Result<Vec<DiscussionReply>> {
+    let res = self.0.get(&DISCUSSION_REPLIES(course, discussion, discussion_board)).send()?.text()?;
+    parse_discussion_replies(&res).ok_or("invalid discussion replies format".into())
+  }
+
+  pub fn reply_discussion(&self, course: IdRef<'_>, discussion: IdRef<'_>, content: String, respondent_reply: Option<IdRef<'_>>, file: Option<(&str, Vec<u8>)>) -> Result<()> {
+    let form = Form::new().text("wlkcid", course.to_owned()).text("tltid", discussion.to_owned()).text("nr", content.to_owned());
+    let form = form_file!(form, file);
+    let form = if let Some(x) = respondent_reply { form.text("fhhid", x.to_owned()).text("_fhhid", x.to_owned()) } else { form };
+    check_success!(b, self.0.post(REPLY_DISCUSSION).multipart(form), "failed to reply discussion")
+  }
+
+  pub fn delete_discussion_reply(&self, course: IdRef<'_>, reply: IdRef<'_>) -> Result<()> {
+    check_success!(b, self.0.post(&DELETE_DISCUSSION_REPLY(course, reply)), "failed to delete discussion reply")
   }
 }

@@ -28,7 +28,7 @@ pub type IdRef<'a> = &'a str;
 
 pub fn semester_desc(semester: IdRef) -> String {
   let (l, r) = semester.split_at(semester.len() - 1);
-  l.to_string() + match r {
+  l.to_owned() + match r {
     "1" => "fall",
     "2" => "spring",
     "3" => "summer",
@@ -126,8 +126,9 @@ pub struct HomeworkDetail {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DiscussionBase {
+pub struct Discussion {
   #[serde(rename = "id")] pub id: Id,
+  #[serde(rename = "bqid")] pub board_id: String,
   #[serde(rename = "bt")] pub title: String,
   #[serde(rename = "fbrxm")] pub publisher_name: String,
   #[serde(rename = "fbsj", deserialize_with = "date_time1")] pub publish_time: NaiveDateTime,
@@ -137,20 +138,15 @@ pub struct DiscussionBase {
   #[serde(rename = "hfcs")] pub reply_count: u32,
 }
 
-#[derive(Debug, Deserialize, Deref, DerefMut)]
-pub struct Discussion {
-  #[serde(flatten)]
-  #[deref]
-  #[deref_mut]
-  pub base: DiscussionBase,
-  #[serde(rename = "bqid")] pub board_id: String,
+#[derive(Debug)]
+pub struct DiscussionReply0<R> {
+  // the first reply is publisher's content, and cannot be further replied, so it does not have an id
+  pub id: Option<String>,
+  pub author: String,
+  pub publish_time: NaiveDateTime,
+  pub content: String,
+  // sub replies, `Vec<...>` if there is any, `()` if there is none
+  pub replies: R,
 }
 
-#[derive(Debug, Deserialize, Deref, DerefMut)]
-pub struct Question {
-  #[serde(flatten)]
-  #[deref]
-  #[deref_mut]
-  pub base: DiscussionBase,
-  #[serde(rename = "wtnr")] pub question: String,
-}
+pub type DiscussionReply = DiscussionReply0<Vec<DiscussionReply0<()>>>;

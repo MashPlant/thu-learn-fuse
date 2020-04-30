@@ -68,6 +68,12 @@ pub fn DISCUSSION_LIST(course: &str) -> String {
   format!("https://learn.tsinghua.edu.cn/b/wlxt/bbs/bbs_tltb/student/kctlList?wlkcid={}&size=200", course)
 }
 
-pub fn QUESTION_LIST(course: &str) -> String {
-  format!("https://learn.tsinghua.edu.cn/b/wlxt/bbs/bbs_tltb/student/kcdyList?wlkcid={}&size=200", course)
+pub fn DISCUSSION_REPLIES(course: &str, discussion: &str, discussion_board: &str) -> String {
+  format!("https://learn.tsinghua.edu.cn/f/wlxt/bbs/bbs_tltb/student/viewTlById?wlkcid={}&id={}&bqid={}&tabbh=1", course, discussion, discussion_board)
+}
+
+pub const REPLY_DISCUSSION: &str = "https://learn.tsinghua.edu.cn/b/wlxt/bbs/bbs_tltb/student/saveEdit";
+
+pub fn DELETE_DISCUSSION_REPLY(course: &str, reply: &str) -> String {
+  format!("https://learn.tsinghua.edu.cn/b/wlxt/bbs/bbs_hhb/student/delHf?wlkcid={}&id={}", course, reply)
 }

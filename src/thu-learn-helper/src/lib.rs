@@ -9,8 +9,28 @@ pub mod blocking;
 
 use reqwest::{Client, ClientBuilder, multipart::{Form, Part}};
 use futures::future::{try_join3, try_join_all};
-use std::borrow::Cow;
 use crate::{parse::*, urls::*, types::*};
+
+#[macro_use]
+mod macros {
+  // it cannot be a function, because the `Form` type in async api and blocking api of `reqwest` is different
+  // it can be used in both submitting homework, or replying to discussion
+  #[macro_export]
+  macro_rules! form_file {
+    ($form: expr, $file: expr) => {
+      if let Some((name, data)) = $file {
+        $form.part("fileupload", Part::bytes(data).file_name(name.to_owned()))
+      } else { $form.text("fileupload", "undefined") }
+    };
+  }
+
+  // `a` for `async`, `b` for `blocking`
+  #[macro_export]
+  macro_rules! check_success {
+    (a, $req: expr, $msg: expr) => { if $req.send().await?.text().await?.contains("success") { Ok(()) } else { Err($msg.into()) } };
+    (b, $req: expr, $msg: expr) => { if $req.send()?.text()?.contains("success") { Ok(()) } else { Err($msg.into()) } };
+  }
+}
 
 pub struct LearnHelper(pub Client);
 
@@ -55,7 +75,7 @@ impl LearnHelper {
         let res = self.0.get(&NOTIFICATION_DETAIL(&x.id, course)).send().await?.text().await?;
         let href_end = res.find("\" class=\"ml-10\"").ok_or(MSG)?;
         let href_start = res[..href_end].rfind("a href=\"").ok_or(MSG)? + 8;
-        Some(PREFIX.to_string() + &res[href_start..href_end])
+        Some(PREFIX.to_owned() + &res[href_start..href_end])
       } else { None };
       OK
     })).await?;
@@ -71,7 +91,7 @@ impl LearnHelper {
       let mut res = self.0.get(&f(course)).send().await?.json::<JsonWrapper2<JsonWrapper20<Homework>>>().await?.object.aaData;
       try_join_all(res.iter_mut().map(async move |x| {
         let res = self.0.get(&x.detail_url()).send().await?.text().await?;
-        x.detail = HomeworkDetail::from_html(&res).ok_or("invalid homework detail format")?;
+        x.detail = parse_homework_detail(&res).ok_or("invalid homework detail format")?;
         OK
       })).await?;
       Ok::<_, Error>(res)
@@ -83,21 +103,31 @@ impl LearnHelper {
     Ok(res)
   }
 
-  pub async fn submit_homework(&self, student_homework: impl Into<Cow<'static, str>>, content: impl Into<Cow<'static, str>>,
-                               file: Option<(impl Into<Cow<'static, str>>, impl Into<Cow<'static, [u8]>>)>) -> Result<()> {
-    let form = Form::new().text("zynr", content).text("xszyid", student_homework).text("isDeleted", "0");
-    let form = if let Some((name, data)) = file {
-      form.part("fileupload", Part::bytes(data).file_name(name))
-    } else { form.text("fileupload", "undefined") };
-    let res = self.0.post(HOMEWORK_SUBMIT).multipart(form).send().await?.text().await?;
-    if res.contains("success") { Ok(()) } else { Err("failed to submit homework".into()) }
+  // the performance loss caused by defining parameters as IdRef instead of impl Into<Cow<'static, str>> is negligible
+  // however giving them type IdRef makes the api much clearer
+  pub async fn submit_homework(&self, student_homework: IdRef<'_>, content: IdRef<'_>, file: Option<(&str, Vec<u8>)>) -> Result<()> {
+    let form = Form::new().text("zynr", content.to_owned()).text("xszyid", student_homework.to_owned()).text("isDeleted", "0");
+    let form = form_file!(form, file);
+    check_success!(a, self.0.post(HOMEWORK_SUBMIT).multipart(form), "failed to submit homework")
   }
 
   pub async fn discussion_list(&self, course: IdRef<'_>) -> Result<Vec<Discussion>> {
     Ok(self.0.get(&DISCUSSION_LIST(course)).send().await?.json::<JsonWrapper2<JsonWrapper21<_>>>().await?.object.resultsList)
   }
 
-  pub async fn question_list(&self, course: IdRef<'_>) -> Result<Vec<Question>> {
-    Ok(self.0.get(&QUESTION_LIST(course)).send().await?.json::<JsonWrapper2<JsonWrapper21<_>>>().await?.object.resultsList)
+  pub async fn discussion_replies(&self, course: IdRef<'_>, discussion: IdRef<'_>, discussion_board: IdRef<'_>) -> Result<Vec<DiscussionReply>> {
+    let res = self.0.get(&DISCUSSION_REPLIES(course, discussion, discussion_board)).send().await?.text().await?;
+    parse_discussion_replies(&res).ok_or("invalid discussion replies format".into())
+  }
+
+  pub async fn reply_discussion(&self, course: IdRef<'_>, discussion: IdRef<'_>, content: String, respondent_reply: Option<IdRef<'_>>, file: Option<(&str, Vec<u8>)>) -> Result<()> {
+    let form = Form::new().text("wlkcid", course.to_owned()).text("tltid", discussion.to_owned()).text("nr", content.to_owned());
+    let form = form_file!(form, file);
+    let form = if let Some(x) = respondent_reply { form.text("fhhid", x.to_owned()).text("_fhhid", x.to_owned()) } else { form };
+    check_success!(a, self.0.post(REPLY_DISCUSSION).multipart(form), "failed to reply discussion")
+  }
+
+  pub async fn delete_discussion_reply(&self, course: IdRef<'_>, reply: IdRef<'_>) -> Result<()> {
+    check_success!(a, self.0.post(&DELETE_DISCUSSION_REPLY(course, reply)), "failed to delete discussion reply")
   }
 }

@@ -10,8 +10,7 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.12"
-scraper = "0.11"
-lazy_static = "1.4"
+select = "0.4"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 derive_more = { version = "0.99.0", default-features = false, features = ["from", "deref", "deref_mut"] }
 

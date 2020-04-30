@@ -1,7 +1,7 @@
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, format::ParseResult};
 use serde::{Deserialize, Deserializer, de::Error};
-use scraper::{Html, Selector, ElementRef};
-use crate::{urls::*, types::HomeworkDetail};
+use select::{document::Document, node::Node, predicate::{Predicate, Attr as A, Class as C}};
+use crate::{urls::*, types::{HomeworkDetail, DiscussionReply0, DiscussionReply}};
 
 #[derive(Deserialize)]
 pub struct JsonWrapper1<T> { pub resultList: Vec<T> }
@@ -15,39 +15,59 @@ pub struct JsonWrapper20<T> { pub aaData: Vec<T> }
 #[derive(Deserialize)]
 pub struct JsonWrapper21<T> { pub resultsList: Vec<T> }
 
-impl HomeworkDetail {
-  pub(crate) fn from_html(detail: &str) -> Option<Self> {
-    lazy_static::lazy_static! {
-      static ref CONTENT: Selector = Selector::parse("div.list.calendar.clearfix>div.fl.right>div.c55").unwrap();
-      static ref FILE_DIV: Selector = Selector::parse("div.list.fujian.clearfix").unwrap();
-      static ref FTITLE: Selector = Selector::parse(".ftitle").unwrap();
+pub fn parse_homework_detail(html: &str) -> Option<HomeworkDetail> {
+  let d = Document::from(html);
+  let mut file_div = d.find(C("list").and(C("fujian")).and(C("clearfix")));
+  fn name_url(n: Option<Node>) -> Option<(String, String)> {
+    for n in n?.find(C("ftitle")) {
+      let n = n.children().nth(1)?;
+      let name = n.children().next()?.as_text()?.to_owned();
+      let href = n.attr("href")?;
+      let url_start = href.find("downloadUrl=")? + 12;
+      return Some((name, PREFIX.to_owned() + &href[url_start..]));
     }
-    let detail = Html::parse_document(&detail);
-    let mut file_div = detail.select(&FILE_DIV);
-    fn name_url(e: Option<ElementRef>) -> Option<(String, String)> {
-      for e in e?.select(&FTITLE) {
-        for n in e.children() {
-          if let Some(e) = n.value().as_element().filter(|x| x.name() == "a") {
-            let name = n.children().next()?.value().as_text()?.to_string();
-            let href = e.attr("href")?;
-            let url_start = href.find("downloadUrl=")? + 12;
-            return Some((name, PREFIX.to_string() + &href[url_start..]));
-          }
-        }
-      }
-      None
-    }
-    Some(HomeworkDetail {
-      description: detail.select(&CONTENT).next()?.html(),
-      attachment_name_url: name_url(file_div.next()),
-      submit_attachment_name_url: name_url(file_div.nth(1)),
-      grade_attachment_name_url: name_url(file_div.next()),
-    })
+    None
   }
+  Some(HomeworkDetail {
+    description: d.find(C("list").and(C("calendar")).and(C("clearfix")).descendant(C("fl").and(C("right"))).descendant(C("c55")))
+      .next()?.inner_html(),
+    attachment_name_url: name_url(file_div.next()),
+    submit_attachment_name_url: name_url(file_div.nth(1)),
+    grade_attachment_name_url: name_url(file_div.next()),
+  })
 }
 
+pub fn parse_discussion_replies(html: &str) -> Option<Vec<DiscussionReply>> {
+  let d = Document::from(html);
+  let mut ret = Vec::new();
+  for (idx, n) in d.find(C("list").and(C("lists")).and(C("clearfix"))).enumerate() {
+    let id = n.attr("id").and_then(|x| Some(x.get("item_".len()..)?.to_owned()));
+    let content = n.children().nth(3)?;
+    let content1 = content.children().nth(3 + (idx == 0) as usize)?.inner_html();
+    let author = n.find(C("name")).next()?.inner_html();
+    let time = content.find(C("time")).next()?.children().nth(1)?;
+    let publish_time = date_time_hm(if idx == 0 { &time.children().next()?.as_text()? } else {
+      &time.as_text()?.get("楼：".len()..)?
+    }).ok()?;
+    let mut replies = Vec::new();
+    if let Some(reply) = content.find(C("huifu_cont").and(C("panel"))).next() {
+      for item in reply.find(C("item")) {
+        let id = item.attr("id").and_then(|x| Some(x.get("item_".len()..)?.to_owned())); // actually it must be Some(_)
+        let content = item.find(A("name", "p_nr")).next()?;
+        let author = content.prev()?.prev()?.inner_html();
+        let publish_time = date_time_hm(item.find(C("time")).next()?.children().next()?.as_text().unwrap()).ok()?;
+        replies.push(DiscussionReply0 { id, author, publish_time, content: content.inner_html(), replies: () });
+      }
+    }
+    ret.push(DiscussionReply0 { id, author, publish_time, content: content1, replies })
+  }
+  Some(ret)
+}
+
+fn date_time_hm(s: &str) -> ParseResult<NaiveDateTime> { NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M") }
+
 pub fn date_time<'d, D>(d: D) -> Result<NaiveDateTime, D::Error> where D: Deserializer<'d> {
-  NaiveDateTime::parse_from_str(<&str>::deserialize(d)?, "%Y-%m-%d %H:%M").map_err(Error::custom)
+  date_time_hm(<&str>::deserialize(d)?).map_err(Error::custom)
 }
 
 pub fn date_time1<'d, D>(d: D) -> Result<NaiveDateTime, D::Error> where D: Deserializer<'d> {
