@@ -16,3 +16,7 @@ tokio = { version = "0.2", features = ["full"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 bytes = "0.5"
 openat = "0.1"
+
+[profile.release]
+lto = true
+panic = "abort"

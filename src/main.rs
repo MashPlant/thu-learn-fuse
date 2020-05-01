@@ -21,7 +21,7 @@ fn do_lookup<S: Borrow<str>>(m: impl IntoIterator<Item=impl Borrow<(S, u64)>>, k
   m.into_iter().find(|x| x.borrow().0.borrow() == k).map(|x| x.borrow().1)
 }
 
-// all Map's value are pointer to other ino
+// all Map's value(u64) are pointer to other ino
 enum InoInfo {
   Root { users: Map },
   // the Map key in parent variant is human-readable, and children variant may store their api-used name
@@ -42,7 +42,7 @@ enum InoInfo {
     course_discussion: Arc<(Arc<String>, String)>,
     board: String,
     client: Arc<LearnHelper>,
-    // empty for un-fetched replies
+    // len() == 1 for un-fetched replies, [0] is `Refresh`
     replies: Map,
   },
   DiscussionReply {
@@ -77,10 +77,10 @@ impl Content {
 
 enum RefreshInfo {
   Homework { course: String, homework: String },
-  Discussion, // no extra data needs to be kept
+  Discussion, // currently no extra data needs to be kept
 }
 
-// FileSystem's ino id starts from 1, fill inos[0] with Root, though it won't be accessed
+// `FileSystem` ino id starts from 1, fill `inos[0]` with `Root`, though it won't be accessed
 struct LearnFS {
   inos: Vec<InoInfo>,
   runtime: Runtime,
@@ -138,7 +138,7 @@ fn read_file(pid: u32, path: &str) -> std::io::Result<Vec<u8>> {
 // inc!(x) <=> x++
 macro_rules! inc { ($x: expr) => { ($x, $x += 1).0 }; }
 
-// $map will be Item(_), each element of $contents will be Content(_)
+// `$map` will be `Item(_)`, each element of `$contents` will be `Content(_)`
 macro_rules! push {
   ($map: expr, $content: expr, $ino: expr, $($name: expr => $val: expr),*) => {
     $($map.push(($name.into(), inc!($ino)));
@@ -157,7 +157,7 @@ macro_rules! try_push {
 
 fn bool2str(b: bool) -> &'static str { if b { "是" } else { "否" } }
 
-// if content_only == false, will push extra 2 items to `m`, respectively `SubmitHomework` and `Refresh`
+// if `content_only == false`, will push extra 2 items to `m`, respectively `SubmitHomework` and `Refresh`
 fn homework_content(h: Homework, mut i: u64, client: &Arc<LearnHelper>, content_only: bool) -> (Vec<(Cow<'static, str>, u64)>, Vec<Content>) {
   let HomeworkDetail { description, attachment_name_url, submit_attachment_name_url, grade_attachment_name_url } = h.detail;
   let (mut m, mut c) = (Vec::new(), Vec::new());
@@ -207,25 +207,19 @@ fn file_content(f: File, mut i: u64, client: Arc<LearnHelper>) -> (Vec<(Cow<'sta
 
 macro_rules! unwrap {
   ($res: expr, $reply: expr) => {
-    match $res {
-      Ok(x) => x,
-      Err(e) => {
-        warn!("line {}: {:?}", line!(), e);
-        return $reply.error(EIO);
-      }
-    }
+    match $res { Ok(x) => x, Err(e) => return (warn!("line {}: {:?}", line!(), e), $reply.error(EIO)).1 }
   };
 }
 
 const COURSE_CONTENT: [&str; 4] = ["作业", "通知", "文件", "讨论"];
 
 impl LearnFS {
-  // fetch discussion replies when the old replies is empty; return true for success
+  // fetch discussion replies when it doesn't exist(equivalent to `replies.len() == 1`); return true for success
   fn fetch_discussion_replies(&mut self, ino: u64) -> bool {
     let mut new_ino = self.inos.len() as u64;
     match &mut self.inos[ino as usize] {
       Discussion { course_discussion, board, client, replies } => {
-        if replies.len() == 1 { // assume len >= 1
+        if replies.len() == 1 {
           let (course, discussion) = (&course_discussion.0, &course_discussion.1);
           let replies1 = match self.runtime.block_on(client.discussion_replies(course, discussion, board)) {
             Ok(x) => x,
@@ -400,6 +394,7 @@ impl Filesystem for LearnFS {
     }
   }
 
+  // called when removing a file, now only useful for removing discussion replies
   fn unlink(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
     info!("unlink parent={} name={:?}", parent, name);
     let name = name.to_string_lossy();
@@ -421,6 +416,7 @@ impl Filesystem for LearnFS {
     }
   }
 
+  // download the url when this file is Content::Url, nop (but not an error) for other files
   fn open(&mut self, _req: &Request, ino: u64, _flags: u32, reply: ReplyOpen) {
     info!("open ino={}", ino);
     if let Content(Content::Url(url, client)) = &mut self.inos[ino as usize] {
@@ -515,6 +511,7 @@ impl Filesystem for LearnFS {
     }
   }
 
+  // if all contents are represented as an array a, we must return a[offset..]
   fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
     info!("readdir ino={} offset={}", ino, offset);
     if offset < 1 { reply.add(ino, 1, Directory, "."); }
@@ -529,10 +526,7 @@ impl Filesystem for LearnFS {
     match &mut self.inos[ino as usize] {
       Root { users: m } | User { semesters: m, .. } | Semester { courses: m } | ItemList(m) => reply_map(m, offset, reply),
       Item(m) => reply_map(m, offset, reply),
-      Course { .. } => {
-        println!("Course");
-        reply_map(COURSE_CONTENT.iter().copied().zip(ino + 1..), offset, reply);
-      }
+      Course { .. } => reply_map(COURSE_CONTENT.iter().copied().zip(ino + 1..), offset, reply),
       Discussion { .. } => {
         self.fetch_discussion_replies(ino);
         match &mut self.inos[ino as usize] {
