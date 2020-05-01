@@ -36,12 +36,17 @@ enum InoInfo {
   },
   // an `Item` can be a homework/notification/file
   ItemList(Map),
-  // Map value points to `Content` or `SubmitHomework`
+  // Map value points to `Content` or `SubmitHomework` or `Refresh`
   Item(Vec<(Cow<'static, str>, u64)>),
   Content(Content),
   SubmitHomework {
     student_homework_id: String,
     client: Arc<LearnHelper>,
+  },
+  Refresh {
+    parent: u64,
+    client: Arc<LearnHelper>,
+    info: RefreshInfo,
   },
 }
 
@@ -56,6 +61,10 @@ impl Content {
   fn bytes(&self) -> &[u8] {
     match self { Content::Data(x) => x, Content::Url(_, _) => &[] }
   }
+}
+
+enum RefreshInfo {
+  Homework { course_id: String, homework_id: String }
 }
 
 // FileSystem's ino id starts from 1, fill inos[0] with Root, though it won't be accessed
@@ -153,7 +162,8 @@ fn homework_content(h: Homework, mut i: u64, client: Arc<LearnHelper>) -> (Vec<(
     m.push((format!("评语附件：{}", name).into(), inc!(i)));
     c.push(Content::Url(url, Arc::clone(&client)));
   }
-  m.push(("提交作业".into(), i)); // it will map to SubmitHomework, added in the caller side of `homework_content`
+  m.push(("提交作业".into(), inc!(i))); // it will map to SubmitHomework, added in the caller side of `homework_content`
+  m.push(("刷新".into(), i)); // it will map to Refresh, added in the caller side of `homework_content`
   (m, c)
 }
 
@@ -190,8 +200,6 @@ macro_rules! unwrap {
 }
 
 const COURSE_CONTENT: [&str; 3] = ["作业", "通知", "文件"];
-// a course takes `COURSE_INO` inos, 1 for itself, remaining for its contents
-const COURSE_INO: u64 = COURSE_CONTENT.len() as u64 + 1;
 
 impl Filesystem for LearnFS {
   fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
@@ -212,7 +220,7 @@ impl Filesystem for LearnFS {
         if let Some(ino) = do_lookup(m, &name) {
           match &self.inos[ino as usize] {
             Content(c) => reply.entry(&TTL, &file_attr(ino, c.bytes().len() as u64), 0),
-            SubmitHomework { .. } => reply.entry(&TTL, &file_attr(ino, 0), 0),
+            SubmitHomework { .. } | Refresh { .. } => reply.entry(&TTL, &file_attr(ino, 0), 0),
             _ => unreachable!(),
           }
         } else { reply.error(ENOENT); }
@@ -226,32 +234,35 @@ impl Filesystem for LearnFS {
           *fetched = true;
           let client = Arc::clone(client);
           macro_rules! handle_items {
-            ($name: ident, $items: expr, $content_fn: expr, $offset: expr, $op1: stmt, $op2: stmt) => {
-              #[allow(redundant_semicolons)]
-              #[allow(unused_mut)]
-              for mut $name in $items {
+            ($items: expr, $content_fn: expr, $offset: expr) => {
+              for x in $items {
                 let new_ino = self.inos.len() as u64;
-                let name = $name.title.clone();
-                $op1;
-                let (m, cs) = $content_fn($name, new_ino + 1, Arc::clone(&client));
+                let name = x.title.clone();
+                let (m, cs) = $content_fn(x, new_ino + 1, Arc::clone(&client));
                 self.inos.push(Item(m));
                 for c in cs { self.inos.push(Content(c)); }
-                $op2;
-                match &mut self.inos[parent as usize + $offset] {
-                  ItemList(m) => m.push((name, new_ino)), _ => unreachable!()
-                }
+                match &mut self.inos[parent as usize + $offset] { ItemList(m) => m.push((name, new_ino)), _ => unreachable!() }
               }
             };
           }
-          handle_items!(x, hs, homework_content, 1,
-            let student_homework_id = std::mem::replace(&mut x.student_homework_id, String::new()),
-            self.inos.push(SubmitHomework { student_homework_id, client: Arc::clone(&client) }));
-          handle_items!(x, ns, notification_content, 2, {}, {});
-          handle_items!(x, fs, file_content, 3, {}, {});
+          for mut h in hs {
+            fn get(s: &mut String) -> String { std::mem::replace(s, String::new()) }
+            let new_ino = self.inos.len() as u64;
+            let (name, student_homework_id, course_id, homework_id) =
+              (get(&mut h.title), get(&mut h.student_homework_id), get(&mut h.course_id), get(&mut h.id));
+            let (m, cs) = homework_content(h, new_ino + 1, Arc::clone(&client));
+            self.inos.push(Item(m));
+            for c in cs { self.inos.push(Content(c)); }
+            self.inos.push(SubmitHomework { student_homework_id, client: Arc::clone(&client) });
+            self.inos.push(Refresh { parent: new_ino, client: Arc::clone(&client), info: RefreshInfo::Homework { course_id, homework_id } });
+            match &mut self.inos[parent as usize + 1] { ItemList(m) => m.push((name, new_ino)), _ => unreachable!() }
+          }
+          handle_items!(ns, notification_content, 2);
+          handle_items!(fs, file_content, 3);
         }
         reply_map(COURSE_CONTENT.iter().copied().zip(parent + 1..), name, reply);
       }
-      Content(_) | SubmitHomework { .. } => reply.error(EPERM),
+      _ => reply.error(EPERM),
     }
   }
 
@@ -260,7 +271,7 @@ impl Filesystem for LearnFS {
     match &self.inos[ino as usize] {
       Root { .. } | User { .. } | Semester { .. } | Course1 { .. } | ItemList(_) | Item(_) => reply.attr(&TTL, &dir_attr(ino)),
       Content(c) => reply.attr(&TTL, &file_attr(ino, c.bytes().len() as u64)),
-      SubmitHomework { .. } => reply.attr(&TTL, &file_attr(ino, 0)),
+      SubmitHomework { .. } | Refresh { .. } => reply.attr(&TTL, &file_attr(ino, 0)),
     }
   }
 
@@ -283,7 +294,7 @@ impl Filesystem for LearnFS {
         let ss1 = ss.iter().map(|s| {
           let (l, r) = s.split_at(s.len() - 1);
           l.to_owned() + match r { "1" => "秋", "2" => "春", "3" => "夏", _ => panic!("invalid semester type"), }
-        }).zip(css.iter().scan(new_ino + 1, |sum, cs| (Some(*sum), *sum += cs.len() as u64 * COURSE_INO + 1).0))
+        }).zip(css.iter().scan(new_ino + 1, |sum, cs| (Some(*sum), *sum += (cs.len() * (COURSE_CONTENT.len() + 1)) as u64 + 1).0))
           .collect();
         users.push((name.into_owned(), new_ino));
         self.inos.push(User { semesters: ss1 });
@@ -330,7 +341,7 @@ impl Filesystem for LearnFS {
 
   fn write(&mut self, req: &Request, ino: u64, _fh: u64, _offset: i64, data: &[u8], _flags: u32, reply: ReplyWrite) {
     info!("write ino={} data={:?}", ino, data);
-    match &mut self.inos[ino as usize] {
+    match &self.inos[ino as usize] {
       SubmitHomework { student_homework_id, client } => {
         reply.written(data.len() as u32);
         // the operation of fuse is not re-entrant, so we must finish `write` before we can start another operation
@@ -347,8 +358,34 @@ impl Filesystem for LearnFS {
           let file = if let Some(f) = file {
             Some((f, if let Ok(x) = read_file(pid, f) { x } else { return; }))
           } else { None };
-          let _ = client.submit_homework(&student_homework_id, &content, file).await;
+          if let Err(e) = client.submit_homework(&student_homework_id, &content, file).await {
+            warn!("failed to submit homework: {}", e);
+          } else { info!("submit homework done"); }
         });
+      }
+      Refresh { parent, client, info } => {
+        let parent = *parent;
+        match info {
+          RefreshInfo::Homework { course_id, homework_id } => {
+            let hs = unwrap!(self.runtime.block_on(client.homework_list(course_id)), reply, EIO);
+            if let Some(h) = hs.into_iter().find(|h| &h.id == homework_id) {
+              let new_ino = self.inos.len() as u64;
+              let (m, cs) = homework_content(h, new_ino, Arc::clone(client));
+              for c in cs { self.inos.push(Content(c)); }
+              let m1 = match &mut self.inos[parent as usize] { Item(m) => m, _ => unreachable!() };
+              let (submit_homework, refresh) = {
+                let mut it = m1.drain(m1.len() - 2..);
+                (it.next().unwrap(), it.next().unwrap())
+              };
+              // for convenience, except for the last two files, the space occupied by other files has not been recycled
+              // this does cause a waste of space, and it would be better if we had a global garbage collector
+              // now we can pretend that it exists, so there is no need to implement refreshing very carefully
+              *m1 = m;
+              (m1.pop(), m1.pop(), m1.push(submit_homework), m1.push(refresh));
+            }
+          }
+        }
+        reply.written(data.len() as u32);
       }
       _ => reply.error(EPERM),
     }
@@ -365,7 +402,7 @@ impl Filesystem for LearnFS {
       }
       reply.ok();
     }
-    match &mut self.inos[ino as usize] {
+    match &self.inos[ino as usize] {
       Root { users: m } | User { semesters: m, .. } | Semester { courses: m } | ItemList(m) => reply_map(m, offset, reply),
       Item(m) => reply_map(m, offset, reply),
       Course1 { .. } => reply_map(COURSE_CONTENT.iter().copied().zip(ino + 1..), offset, reply),
