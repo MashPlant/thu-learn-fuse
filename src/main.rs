@@ -4,19 +4,14 @@ extern crate log;
 
 use fuse::{Filesystem, Request, ReplyEntry, ReplyAttr, ReplyDirectory, FileType::*, FileAttr, ReplyData, ReplyWrite, ReplyOpen};
 use libc::{ENOENT, EIO, EPERM};
-use std::ffi::OsStr;
-use std::time::{Duration, UNIX_EPOCH};
-use std::sync::Arc;
-use thu_learn_helper::LearnHelper;
-use thu_learn_helper::types::{Course, Homework, HomeworkDetail, Notification, File, Error};
-use std::borrow::{Borrow, Cow};
 use tokio::runtime::Runtime;
-use futures::future::{try_join_all, try_join3};
+use futures::future::{try_join_all, try_join4};
 use bytes::Bytes;
 use openat::Dir;
+use std::{ffi::OsStr, time::{Duration, UNIX_EPOCH}, sync::Arc, borrow::{Borrow, Cow}};
+use thu_learn_helper::{LearnHelper, types::{Homework, HomeworkDetail, Notification, File, Error}};
 
 use InoInfo::*;
-use std::io::Read;
 
 // there is no need to use BTreeMap / HashMap / IndexMap for performance
 // this simple solution keeps insertion order, and is quite fast when dealing with small amount of data
@@ -28,19 +23,32 @@ enum InoInfo {
   // the Map key in parent variant is human-readable, and children variant may store their api-used name
   User { semesters: Map },
   Semester { courses: Map },
-  // add `1` to avoid name conflict with thu_learn_helper::types::Course
-  Course1 {
-    course: Course,
+  Course {
+    id: Arc<String>,
     client: Arc<LearnHelper>,
     fetched: bool,
   },
-  // an `Item` can be a homework/notification/file
+  // its children can be `Item` or `Discussion`
   ItemList(Map),
+  // an `Item` can be a homework/notification/file
   // Map value points to `Content` or `SubmitHomework` or `Refresh`
   Item(Vec<(Cow<'static, str>, u64)>),
   Content(Content),
+  Discussion {
+    course_discussion: Arc<(Arc<String>, String)>,
+    board: String,
+    client: Arc<LearnHelper>,
+    // empty for un-fetched replies
+    replies: Map,
+  },
+  DiscussionReply {
+    course_discussion: Arc<(Arc<String>, String)>,
+    id: Arc<Option<String>>,
+    client: Arc<LearnHelper>,
+    content: String,
+  },
   SubmitHomework {
-    student_homework_id: String,
+    student_homework: Arc<String>,
     client: Arc<LearnHelper>,
   },
   Refresh {
@@ -64,7 +72,7 @@ impl Content {
 }
 
 enum RefreshInfo {
-  Homework { course_id: String, homework_id: String }
+  Homework { course: String, homework: String }
 }
 
 // FileSystem's ino id starts from 1, fill inos[0] with Root, though it won't be accessed
@@ -114,6 +122,7 @@ fn get_password(pid: u32) -> std::io::Result<String> {
 
 // read file content of `path`, from the cwd of the given process
 fn read_file(pid: u32, path: &str) -> std::io::Result<Vec<u8>> {
+  use std::io::Read;
   let dir = Dir::open(format!("/proc/{}/cwd", pid))?;
   let mut file = dir.open_file(path)?;
   let mut buf = Vec::new();
@@ -199,7 +208,49 @@ macro_rules! unwrap {
   };
 }
 
-const COURSE_CONTENT: [&str; 3] = ["作业", "通知", "文件"];
+const COURSE_CONTENT: [&str; 4] = ["作业", "通知", "文件", "讨论"];
+
+impl LearnFS {
+  // fetch discussion replies when the old replies is empty; return true for success
+  fn fetch_discussion_replies(&mut self, ino: u64) -> bool {
+    let mut new_ino = self.inos.len() as u64;
+    match &mut self.inos[ino as usize] {
+      Discussion { course_discussion, board, client, replies } => {
+        if replies.is_empty() {
+          let (course, discussion) = (&course_discussion.0, &course_discussion.1);
+          let replies1 = match self.runtime.block_on(client.discussion_replies(course, discussion, board)) {
+            Ok(x) => x,
+            Err(e) => return (warn!("line {}: {:?}", line!(), e), false).1,
+          };
+          for (i, r) in replies1.iter().enumerate() {
+            replies.push((format!("{}楼-{}-{}", i + 1, r.author, r.publish_time), inc!(new_ino)));
+            for (j, r) in r.replies.iter().enumerate() {
+              replies.push((format!("{}楼-回复{}-{}-{}", i + 1, j + 1, r.author, r.publish_time), inc!(new_ino)));
+            }
+          }
+          let (course_discussion, client) = (Arc::clone(course_discussion), Arc::clone(client));
+          for r in replies1 {
+            // it can't be a function, because the types of the two `r`s are different
+            macro_rules! push {
+              ($r: expr) => {
+                self.inos.push(DiscussionReply {
+                  course_discussion: Arc::clone(&course_discussion),
+                  id: Arc::new($r.id),
+                  client: Arc::clone(&client),
+                  content: $r.content,
+                });
+              };
+            }
+            push!(r);
+            for r in r.replies { push!(r); }
+          }
+        }
+        true
+      }
+      _ => unreachable!(),
+    }
+  }
+}
 
 impl Filesystem for LearnFS {
   fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
@@ -224,15 +275,30 @@ impl Filesystem for LearnFS {
             _ => unreachable!(),
           }
         } else { reply.error(ENOENT); }
+      // we need to fetch replies in both `lookup` and `readdir`, the former will be first called when
+      // user opens a file; the latter will be first called when user types `ls`
+      Discussion { .. } => {
+        self.fetch_discussion_replies(parent);
+        match &mut self.inos[parent as usize] {
+          Discussion { replies: m, .. } =>
+            if let Some(ino) = do_lookup(m, &name) {
+              match &self.inos[ino as usize] {
+                DiscussionReply { content, .. } => reply.entry(&TTL, &file_attr(ino, content.bytes().len() as u64), 0),
+                Refresh { .. } => reply.entry(&TTL, &file_attr(ino, 0), 0),
+                _ => unreachable!(),
+              }
+            } else { reply.error(ENOENT); }
+          _ => unreachable!(),
+        }
+      }
       // going into any child dir representing course content must first call `lookup`, so fill the content of them here
-      Course1 { course, client, fetched } => {
+      Course { id, client, fetched } => {
         if !*fetched {
-          let (hs, ns, fs) = unwrap!(self.runtime.block_on(try_join3(
-            client.homework_list(&course.id),
-            client.notification_list(&course.id),
-            client.file_list(&course.id))), reply, EIO);
+          let (course, client) = (Arc::clone(id), Arc::clone(client));
+          let (hs, ns, fs, ds) = unwrap!(self.runtime.block_on(try_join4(
+            client.homework_list(&course), client.notification_list(&course),
+            client.file_list(&course), client.discussion_list(&course))), reply, EIO);
           *fetched = true;
-          let client = Arc::clone(client);
           macro_rules! handle_items {
             ($items: expr, $content_fn: expr, $offset: expr) => {
               for x in $items {
@@ -248,17 +314,27 @@ impl Filesystem for LearnFS {
           for mut h in hs {
             fn get(s: &mut String) -> String { std::mem::replace(s, String::new()) }
             let new_ino = self.inos.len() as u64;
-            let (name, student_homework_id, course_id, homework_id) =
+            let (name, sh, course, homework) =
               (get(&mut h.title), get(&mut h.student_homework_id), get(&mut h.course_id), get(&mut h.id));
             let (m, cs) = homework_content(h, new_ino + 1, Arc::clone(&client));
             self.inos.push(Item(m));
             for c in cs { self.inos.push(Content(c)); }
-            self.inos.push(SubmitHomework { student_homework_id, client: Arc::clone(&client) });
-            self.inos.push(Refresh { parent: new_ino, client: Arc::clone(&client), info: RefreshInfo::Homework { course_id, homework_id } });
+            self.inos.push(SubmitHomework { student_homework: Arc::new(sh), client: Arc::clone(&client) });
+            self.inos.push(Refresh { parent: new_ino, client: Arc::clone(&client), info: RefreshInfo::Homework { course, homework } });
             match &mut self.inos[parent as usize + 1] { ItemList(m) => m.push((name, new_ino)), _ => unreachable!() }
           }
           handle_items!(ns, notification_content, 2);
           handle_items!(fs, file_content, 3);
+          for d in ds {
+            let new_ino = self.inos.len() as u64;
+            self.inos.push(Discussion {
+              course_discussion: Arc::new((Arc::clone(&course), d.id)),
+              board: d.board_id,
+              client: Arc::clone(&client),
+              replies: Vec::new(),
+            });
+            match &mut self.inos[parent as usize + 4] { ItemList(m) => m.push((d.title, new_ino)), _ => unreachable!() }
+          }
         }
         reply_map(COURSE_CONTENT.iter().copied().zip(parent + 1..), name, reply);
       }
@@ -269,8 +345,9 @@ impl Filesystem for LearnFS {
   fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
     info!("getattr ino={}", ino);
     match &self.inos[ino as usize] {
-      Root { .. } | User { .. } | Semester { .. } | Course1 { .. } | ItemList(_) | Item(_) => reply.attr(&TTL, &dir_attr(ino)),
+      Root { .. } | User { .. } | Semester { .. } | Course { .. } | ItemList(_) | Item(_) | Discussion { .. } => reply.attr(&TTL, &dir_attr(ino)),
       Content(c) => reply.attr(&TTL, &file_attr(ino, c.bytes().len() as u64)),
+      DiscussionReply { content, .. } => reply.attr(&TTL, &file_attr(ino, content.len() as u64)),
       SubmitHomework { .. } | Refresh { .. } => reply.attr(&TTL, &file_attr(ino, 0)),
     }
   }
@@ -298,15 +375,16 @@ impl Filesystem for LearnFS {
           .collect();
         users.push((name.into_owned(), new_ino));
         self.inos.push(User { semesters: ss1 });
-        for cs in css {
+        for mut cs in css {
           let new_ino = self.inos.len() as u64;
-          let cs1 = cs.iter().map(|c| c.name.clone()).zip((new_ino + 1..).step_by(4)).collect();
+          let cs1 = cs.iter_mut().map(|c| std::mem::replace(&mut c.name, String::new()))
+            .zip((new_ino + 1..).step_by(COURSE_CONTENT.len() + 1)).collect();
           self.inos.push(Semester { courses: cs1 });
-          for course in cs {
-            self.inos.push(Course1 { course, client: Arc::clone(&cl), fetched: false });
-            self.inos.push(ItemList(Vec::new()));
-            self.inos.push(ItemList(Vec::new()));
-            self.inos.push(ItemList(Vec::new()));
+          for c in cs {
+            self.inos.push(Course { id: Arc::new(c.id), client: Arc::clone(&cl), fetched: false });
+            for _ in 0..COURSE_CONTENT.len() {
+              self.inos.push(ItemList(Vec::new()));
+            }
           }
         }
         reply.entry(&TTL, &dir_attr(new_ino), 0);
@@ -328,12 +406,13 @@ impl Filesystem for LearnFS {
 
   fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, size: u32, reply: ReplyData) {
     info!("read ino={} offset={} size={}", ino, offset, size);
-    let offset = offset as usize;
+    let reply_bytes = move |b: &[u8], reply: ReplyData| {
+      let offset = offset as usize;
+      reply.data(&b[offset..(offset + size as usize).min(b.len())])
+    };
     match &self.inos[ino as usize] {
-      Content(c) => {
-        let data = c.bytes();
-        reply.data(&data[offset..(offset + size as usize).min(data.len())])
-      }
+      Content(c) => reply_bytes(c.bytes(), reply),
+      DiscussionReply { content, .. } => reply_bytes(content.as_bytes(), reply),
       SubmitHomework { .. } => reply.data(&[]),
       _ => reply.error(EPERM),
     }
@@ -341,24 +420,26 @@ impl Filesystem for LearnFS {
 
   fn write(&mut self, req: &Request, ino: u64, _fh: u64, _offset: i64, data: &[u8], _flags: u32, reply: ReplyWrite) {
     info!("write ino={} data={:?}", ino, data);
+    fn parse_data(data: &[u8], pid: u32) -> Option<(String, Option<(&str, Vec<u8>)>)> {
+      let data = std::str::from_utf8(&data).ok()?;
+      let (file, content) = if data.starts_with("FILE=") {
+        let data = &data[5..];
+        let file_end = data.find(|x: char| x.is_whitespace()).unwrap_or(data.len());
+        (Some(&data[..file_end]), &data[file_end..])
+      } else { (None, data) };
+      let file = if let Some(f) = file { Some((f, read_file(pid, f).ok()?)) } else { None };
+      Some((content.to_owned(), file))
+    }
     match &self.inos[ino as usize] {
-      SubmitHomework { student_homework_id, client } => {
+      SubmitHomework { student_homework, client } => {
         reply.written(data.len() as u32);
         // the operation of fuse is not re-entrant, so we must finish `write` before we can start another operation
         // I choose to spawn the handle finish this request, so that error handling must be ignored, because their is no way to fetch the result
         let (pid, data) = (req.pid(), data.to_vec());
-        let (student_homework_id, client) = (student_homework_id.clone(), Arc::clone(client));
+        let (student_homework, client) = (Arc::clone(student_homework), Arc::clone(client));
         self.runtime.spawn(async move {
-          let data = if let Ok(x) = std::str::from_utf8(&data) { x } else { return; };
-          let (file, content) = if data.starts_with("FILE=") {
-            let data = &data[5..];
-            let file_end = data.find(|x: char| x.is_whitespace()).unwrap_or(data.len());
-            (Some(&data[..file_end]), &data[file_end..])
-          } else { (None, data) };
-          let file = if let Some(f) = file {
-            Some((f, if let Ok(x) = read_file(pid, f) { x } else { return; }))
-          } else { None };
-          if let Err(e) = client.submit_homework(&student_homework_id, &content, file).await {
+          let (content, file) = if let Some(x) = parse_data(&data, pid) { x } else { return; };
+          if let Err(e) = client.submit_homework(&student_homework, content, file).await {
             warn!("failed to submit homework: {}", e);
           } else { info!("submit homework done"); }
         });
@@ -366,9 +447,9 @@ impl Filesystem for LearnFS {
       Refresh { parent, client, info } => {
         let parent = *parent;
         match info {
-          RefreshInfo::Homework { course_id, homework_id } => {
-            let hs = unwrap!(self.runtime.block_on(client.homework_list(course_id)), reply, EIO);
-            if let Some(h) = hs.into_iter().find(|h| &h.id == homework_id) {
+          RefreshInfo::Homework { course, homework } => {
+            let hs = unwrap!(self.runtime.block_on(client.homework_list(course)), reply, EIO);
+            if let Some(h) = hs.into_iter().find(|h| &h.id == homework) {
               let new_ino = self.inos.len() as u64;
               let (m, cs) = homework_content(h, new_ino, Arc::clone(client));
               for c in cs { self.inos.push(Content(c)); }
@@ -387,6 +468,17 @@ impl Filesystem for LearnFS {
         }
         reply.written(data.len() as u32);
       }
+      DiscussionReply { course_discussion, id, client, .. } => {
+        let (pid, data) = (req.pid(), data.to_vec());
+        let (course_discussion, id, client) = (Arc::clone(course_discussion), Arc::clone(id), Arc::clone(&client));
+        self.runtime.spawn(async move {
+          let (content, file) = if let Some(x) = parse_data(&data, pid) { x } else { return; };
+          let (course, discussion) = (&course_discussion.0, &course_discussion.1);
+          if let Err(e) = client.reply_discussion(course, discussion, content, id.as_deref(), file).await {
+            warn!("failed to reply discussion: {}", e);
+          } else { info!("reply discussion done"); }
+        });
+      }
       _ => reply.error(EPERM),
     }
   }
@@ -402,10 +494,20 @@ impl Filesystem for LearnFS {
       }
       reply.ok();
     }
-    match &self.inos[ino as usize] {
+    match &mut self.inos[ino as usize] {
       Root { users: m } | User { semesters: m, .. } | Semester { courses: m } | ItemList(m) => reply_map(m, offset, reply),
       Item(m) => reply_map(m, offset, reply),
-      Course1 { .. } => reply_map(COURSE_CONTENT.iter().copied().zip(ino + 1..), offset, reply),
+      Course { .. } => {
+        println!("Course");
+        reply_map(COURSE_CONTENT.iter().copied().zip(ino + 1..), offset, reply);
+      }
+      Discussion { .. } => {
+        self.fetch_discussion_replies(ino);
+        match &mut self.inos[ino as usize] {
+          Discussion { replies, .. } => reply_map(replies, offset, reply),
+          _ => unreachable!(),
+        }
+      }
       _ => reply.error(EPERM),
     }
   }

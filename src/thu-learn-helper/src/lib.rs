@@ -105,8 +105,8 @@ impl LearnHelper {
 
   // the performance loss caused by defining parameters as IdRef instead of impl Into<Cow<'static, str>> is negligible
   // however giving them type IdRef makes the api much clearer
-  pub async fn submit_homework(&self, student_homework: IdRef<'_>, content: IdRef<'_>, file: Option<(&str, Vec<u8>)>) -> Result<()> {
-    let form = Form::new().text("zynr", content.to_owned()).text("xszyid", student_homework.to_owned()).text("isDeleted", "0");
+  pub async fn submit_homework(&self, student_homework: IdRef<'_>, content: String, file: Option<(&str, Vec<u8>)>) -> Result<()> {
+    let form = Form::new().text("zynr", content).text("xszyid", student_homework.to_owned()).text("isDeleted", "0");
     let form = form_file!(form, file);
     check_success!(a, self.0.post(HOMEWORK_SUBMIT).multipart(form), "failed to submit homework")
   }

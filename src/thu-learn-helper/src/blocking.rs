@@ -67,8 +67,8 @@ impl LearnHelper {
     Ok(ret)
   }
 
-  pub fn submit_homework(&self, student_homework: IdRef<'_>, content: IdRef<'_>, file: Option<(&str, Vec<u8>)>) -> Result<()> {
-    let form = Form::new().text("zynr", content.to_owned()).text("xszyid", student_homework.to_owned()).text("isDeleted", "0");
+  pub fn submit_homework(&self, student_homework: IdRef<'_>, content: String, file: Option<(&str, Vec<u8>)>) -> Result<()> {
+    let form = Form::new().text("zynr", content).text("xszyid", student_homework.to_owned()).text("isDeleted", "0");
     let form = form_file!(form, file);
     check_success!(b,  self.0.post(HOMEWORK_SUBMIT).multipart(form), "failed to submit homework")
   }

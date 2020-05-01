@@ -1,6 +1,6 @@
 use chrono::{NaiveDateTime, format::ParseResult};
 use serde::{Deserialize, Deserializer, de::Error};
-use select::{document::Document, node::Node, predicate::{Predicate, Attr as A, Class as C}};
+use select::{document::Document, node::Node, predicate::{Predicate, Attr as A, Class as C, Name as N}};
 use crate::{urls::*, types::{HomeworkDetail, DiscussionReply0, DiscussionReply}};
 
 #[derive(Deserialize)]
@@ -29,8 +29,7 @@ pub fn parse_homework_detail(html: &str) -> Option<HomeworkDetail> {
     None
   }
   Some(HomeworkDetail {
-    description: d.find(C("list").and(C("calendar")).and(C("clearfix")).descendant(C("fl").and(C("right"))).descendant(C("c55")))
-      .next()?.inner_html(),
+    description: d.find(C("list").and(C("calendar")).and(C("clearfix")).descendant(C("fl").and(C("right"))).descendant(C("c55"))).next()?.inner_html(),
     attachment_name_url: name_url(file_div.next()),
     submit_attachment_name_url: name_url(file_div.nth(1)),
     grade_attachment_name_url: name_url(file_div.next()),
@@ -42,10 +41,16 @@ pub fn parse_discussion_replies(html: &str) -> Option<Vec<DiscussionReply>> {
   let mut ret = Vec::new();
   for (idx, n) in d.find(C("list").and(C("lists")).and(C("clearfix"))).enumerate() {
     let id = n.attr("id").and_then(|x| Some(x.get("item_".len()..)?.to_owned()));
-    let content = n.children().nth(3)?;
-    let content1 = content.children().nth(3 + (idx == 0) as usize)?.inner_html();
+    let content = n.find(C("right")).next()?;
+    let content1 = if idx == 0 {
+      let mut s = String::new();
+      for ch in content.find(N("p")) {
+        if let Some(x) = ch.children().next().and_then(|x| x.as_text()) { s += x; }
+      }
+      s
+    } else { content.find(A("name", "p_nr")).next()?.inner_html() };
     let author = n.find(C("name")).next()?.inner_html();
-    let time = content.find(C("time")).next()?.children().nth(1)?;
+    let time = n.find(C("time")).next()?.children().nth(1)?;
     let publish_time = date_time_hm(if idx == 0 { &time.children().next()?.as_text()? } else {
       &time.as_text()?.get("楼：".len()..)?
     }).ok()?;
@@ -54,8 +59,9 @@ pub fn parse_discussion_replies(html: &str) -> Option<Vec<DiscussionReply>> {
       for item in reply.find(C("item")) {
         let id = item.attr("id").and_then(|x| Some(x.get("item_".len()..)?.to_owned())); // actually it must be Some(_)
         let content = item.find(A("name", "p_nr")).next()?;
-        let author = content.prev()?.prev()?.inner_html();
-        let publish_time = date_time_hm(item.find(C("time")).next()?.children().next()?.as_text().unwrap()).ok()?;
+        let author = content.prev()?.prev()?.children().next()?.as_text()?;
+        let author = author.get(..author.len() - "：".len())?.to_owned();
+        let publish_time = date_time_hm(item.find(C("time")).next()?.children().next()?.as_text()?).ok()?;
         replies.push(DiscussionReply0 { id, author, publish_time, content: content.inner_html(), replies: () });
       }
     }
