@@ -1,5 +1,5 @@
 use reqwest::{blocking::{Client, ClientBuilder, multipart::{Form, Part}}};
-use crate::{form_file, check_success};
+use crate::{form_file, check_success, DELETE_DR_TIMEOUT, check_delete_dr_success};
 use crate::{parse::*, urls::*, types::*};
 
 // the inner `Client` object is public, because I don't pretty much care user modifying it
@@ -90,6 +90,7 @@ impl LearnHelper {
   }
 
   pub fn delete_discussion_reply(&self, course: IdRef<'_>, reply: IdRef<'_>) -> Result<()> {
-    check_success!(b, self.0.post(&DELETE_DISCUSSION_REPLY(course, reply)), "failed to delete discussion reply")
+    check_delete_dr_success(
+      self.0.post(&DELETE_DISCUSSION_REPLY(course, reply)).timeout(DELETE_DR_TIMEOUT).send().and_then(|r| r.text()))
   }
 }

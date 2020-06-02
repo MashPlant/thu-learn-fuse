@@ -2,13 +2,13 @@
 #[macro_use]
 extern crate log;
 
-use fuse::{Filesystem, Request, ReplyEntry, ReplyAttr, ReplyDirectory, FileType::*, FileAttr, ReplyData, ReplyWrite, ReplyOpen, ReplyEmpty};
+use fuse::{Filesystem, Request, ReplyEntry, ReplyAttr, ReplyDirectory, FileType::*, FileAttr, ReplyData, ReplyWrite, ReplyOpen, ReplyEmpty, ReplyCreate};
 use libc::{ENOENT, EIO, EPERM};
 use tokio::runtime::Runtime;
 use futures::future::{try_join_all, try_join4};
 use bytes::Bytes;
 use openat::Dir;
-use std::{ffi::OsStr, time::{Duration, UNIX_EPOCH}, sync::Arc, borrow::{Borrow, Cow}};
+use std::{ffi::OsStr, time::{Duration, UNIX_EPOCH}, sync::Arc, borrow::{Borrow, Cow}, time::SystemTime};
 use thu_learn_helper::{LearnHelper, types::{Homework, HomeworkDetail, Notification, File, Error}};
 
 use InoInfo::*;
@@ -353,6 +353,11 @@ impl Filesystem for LearnFS {
     }
   }
 
+  fn setattr(&mut self, req: &Request, ino: u64, _mode: Option<u32>, _uid: Option<u32>, _gid: Option<u32>, _size: Option<u64>, _atime: Option<SystemTime>, _mtime: Option<SystemTime>, _fh: Option<u64>, _crtime: Option<SystemTime>, _chgtime: Option<SystemTime>, _bkuptime: Option<SystemTime>, _flags: Option<u32>, reply: ReplyAttr) {
+    info!("setattr(forward to getattr) ino={}", ino);
+    self.getattr(req, ino, reply);
+  }
+
   fn mkdir(&mut self, req: &Request, parent: u64, name: &OsStr, _mode: u32, reply: ReplyEntry) {
     info!("mkdir parent={} name={:?}", parent, name);
     let name = name.to_string_lossy();
@@ -511,6 +516,11 @@ impl Filesystem for LearnFS {
     }
   }
 
+  // we never need flush or sync
+  fn flush(&mut self, _req: &Request, _ino: u64, _fh: u64, _lock_owner: u64, reply: ReplyEmpty) { reply.ok(); }
+
+  fn fsync(&mut self, _req: &Request, _ino: u64, _fh: u64, _datasync: bool, reply: ReplyEmpty) { reply.ok(); }
+
   // if all contents are represented as an array a, we must return a[offset..]
   fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
     info!("readdir ino={} offset={}", ino, offset);
@@ -531,6 +541,35 @@ impl Filesystem for LearnFS {
         self.fetch_discussion_replies(ino);
         match &mut self.inos[ino as usize] {
           Discussion { replies, .. } => reply_map(replies, offset, reply),
+          _ => unreachable!(),
+        }
+      }
+      _ => reply.error(EPERM),
+    }
+  }
+
+  fn create(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, _mode: u32, _flags: u32, reply: ReplyCreate) {
+    info!("create parent={} name={:?}", parent, name);
+    let name = name.to_string_lossy();
+    match &mut self.inos[parent as usize] {
+      Item(m) =>
+        if let Some(ino) = do_lookup(m, &name) {
+          match &self.inos[ino as usize] {
+            SubmitHomework { .. } | Refresh { .. } => reply.created(&TTL, &file_attr(ino, 0), 0, 0, 0),
+            _ => reply.error(EPERM),
+          }
+        } else { reply.error(EPERM); }
+      Discussion { .. } => {
+        self.fetch_discussion_replies(parent);
+        match &mut self.inos[parent as usize] {
+          Discussion { replies: m, .. } =>
+            if let Some(ino) = do_lookup(m, &name) {
+              match &self.inos[ino as usize] {
+                DiscussionReply { content, .. } => reply.created(&TTL, &file_attr(ino, content.bytes().len() as u64), 0, 0, 0),
+                Refresh { .. } => reply.created(&TTL, &file_attr(ino, 0), 0, 0, 0),
+                _ => unreachable!(),
+              }
+            } else { reply.error(EPERM); }
           _ => unreachable!(),
         }
       }

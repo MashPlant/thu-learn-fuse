@@ -9,7 +9,18 @@ pub mod blocking;
 
 use reqwest::{Client, ClientBuilder, multipart::{Form, Part}};
 use futures::future::{try_join3, try_join_all};
+use std::time::Duration;
 use crate::{parse::*, urls::*, types::*};
+
+pub(crate) const DELETE_DR_TIMEOUT: Duration = Duration::from_secs(1);
+
+pub(crate) fn check_delete_dr_success(r: reqwest::Result<String>) -> Result<()> {
+  match r.map(|x| x.contains("success")) {
+    Ok(true) => Ok(()),
+    Err(e) if e.is_timeout() => Ok(()),
+    _ => Err("failed to delete discussion reply".into())
+  }
+}
 
 #[macro_use]
 mod macros {
@@ -128,6 +139,9 @@ impl LearnHelper {
   }
 
   pub async fn delete_discussion_reply(&self, course: IdRef<'_>, reply: IdRef<'_>) -> Result<()> {
-    check_success!(a, self.0.post(&DELETE_DISCUSSION_REPLY(course, reply)), "failed to delete discussion reply")
+    check_delete_dr_success(async move {
+      let req = self.0.post(&DELETE_DISCUSSION_REPLY(course, reply)).timeout(DELETE_DR_TIMEOUT);
+      req.send().await?.text().await
+    }.await)
   }
 }
