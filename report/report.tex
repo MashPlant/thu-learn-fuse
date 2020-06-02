@@ -6,6 +6,7 @@
 \usepackage{listings}
 \usepackage{xcolor}
 \usepackage{color}
+\usepackage{subfigure}
 \definecolor{GrayCodeBlock}{RGB}{241, 241, 241}
 %\definecolor{BlackText}{RGB}{110, 107, 94}
 \definecolor{BlackText}{RGB}{0, 0, 0}
@@ -134,6 +135,22 @@ let (hs, ns, fs, ds) = unwrap!(self.runtime.block_on(try_join4(
 /2017011466/2019-2020-讨论/论文阅读作业$ echo 'foo' >> '11楼-李晨昊-2020-03-11 12:15:00' # 回复我自己，内容为'foo'，会变成11楼-回复0
 /2017011466/2019-2020-讨论/论文阅读作业$ echo 'foo' >> '0楼-廖晓坚-2020-03-11 11:59:00' # 对0楼的回复等价于添加新的楼层
 \end{lstlisting}
+
+\subsection{用文件浏览器和编辑器操作}
+
+支持了基本的文件系统API之后，很自然地就可以用文件浏览器和编辑器来操作挂载\lstinline|LearnFS|的文件夹。相比于之前用\lstinline|echo >>|来写入文件，经过实验得知，文本编辑器写入的时候除了\lstinline|write|，还会调用\lstinline|create|(其实用用\lstinline|echo >|来写入文件也会调用\lstinline|create|)，因此也需要实现，实现的逻辑是只能对上面描述的那几个允许写的文件进行\lstinline|create|，且\lstinline|create|本身是空操作。
+
+一些运行结果的截图如下：
+
+\newpage
+
+\begin{center}
+  \includegraphics[width=0.6\textwidth]{1.png}
+\end{center}
+
+\begin{center}
+  \includegraphics[width=0.6\textwidth]{2.png}
+\end{center}
 
 \section{问题及解决方式}
 
