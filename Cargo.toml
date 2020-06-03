@@ -11,7 +11,7 @@ fuse = { git = "https://github.com/MashPlant/fuse-rs" }
 log = "0.4"
 env_logger = "0.7"
 libc = "0.2"
-thu-learn-helper = { path = "src/thu-learn-helper" }
+thu-learn-helper = { git = "https://github.com/MashPlant/thu-learn-helper" }
 tokio = { version = "0.2", features = ["full"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 bytes = "0.5"
