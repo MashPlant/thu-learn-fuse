@@ -1,0 +1,332 @@
+% \documentclass[usenames,xcolor=svgnames,11pt,sans,handout]{beamer}
+\documentclass[usenames,xcolor=svgnames,11pt,sans]{beamer}
+\usetheme{Boadilla}
+\definecolor{theme}{RGB}{48,89,182}
+\usecolortheme[named=theme]{structure}
+
+\newcommand{\key}[1]{{\color{theme} #1}}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{stmaryrd}
+\usepackage{graphics}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{array}
+\usepackage{mathtools}
+\usepackage{proof}
+\setlength{\jot}{5pt}
+
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{color}
+\definecolor{White}{RGB}{255, 255, 255}
+\definecolor{GrayCodeBlock}{RGB}{241, 241, 241}
+\definecolor{BlackText}{RGB}{0, 0, 0}
+\definecolor{RedTypename}{RGB}{182, 86, 17}
+\definecolor{GreenString}{RGB}{96, 172, 57}
+\definecolor{PurpleKeyword}{RGB}{184, 84, 212}
+\definecolor{GrayComment}{RGB}{170, 170, 170}
+\definecolor{GoldDocumentation}{RGB}{180, 165, 45}
+\lstset {
+  columns = fullflexible, keepspaces = true, showstringspaces=false, breaklines = true, frame = single, framesep = 0pt, framerule = 0pt, framexleftmargin = 4pt, framexrightmargin = 4pt, framextopmargin = 5pt, framexbottommargin = 3pt, xleftmargin = 4pt, xrightmargin = 4pt,
+  backgroundcolor = \color{GrayCodeBlock},
+  basicstyle = \small\ttfamily\color{BlackText},
+  keywordstyle = \color{PurpleKeyword},
+  ndkeywordstyle = \color{RedTypename},
+  stringstyle = \color{GreenString},
+  commentstyle = \color{GrayComment}
+}
+\lstdefinelanguage{Rust} {
+  keywords = { true, false, unsafe, async, await, move, use, pub, crate, super, self, mod, struct, enum, fn, const, static, let, mut, ref, type, impl, dyn, trait, where, as, break, continue, if, else, while, for, loop, match, return, yield, in },
+  ndkeywords = { bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, f128, char, str, Self, Option, Some, None, Result, Ok, Err, String, Box, Vec, Rc, Arc, Cell, RefCell, HashMap, BTreeMap, macro_rules },
+  comment = [l][\color{GrayComment}\slshape]{//},
+  morecomment = [s][\color{GrayComment}\slshape]{/*}{*/},
+  morecomment = [l][\color{GoldDocumentation}\slshape]{///},
+  morecomment = [s][\color{GoldDocumentation}\slshape]{/*!}{*/},
+  morecomment = [l][\color{GoldDocumentation}\slshape]{//!},
+  morecomment = [s][\color{RedTypename}]{\#![}{]},
+  morecomment = [s][\color{RedTypename}]{\#[}{]},
+  string = [b]"
+}
+
+\renewcommand\r\alert
+\let\t\texttt
+\let\le\leqslant
+\let\ge\geqslant
+\let\emptyset\varnothing
+\let\emptystr\varepsilon
+\let\gets\leftarrow
+\let\to\rightarrow
+\let\nto\Rightarrow
+\let\implies\to
+\let\disp\displaystyle
+\let\defas\triangleq
+
+\begin{document}
+  
+\title{Introduction to thu-learn-fuse}
+\subtitle{(The FUSE Project Report)}
+\author{MashPlant}
+\date{\today}
+  
+\AtBeginSection[]{
+  \begin{frame}{Contents}
+    \tableofcontents[currentsection]
+  \end{frame}
+}
+
+\AtBeginSubsection[]{
+  \begin{frame}{Contents}
+    \tableofcontents[currentsubsection]
+  \end{frame}
+}
+
+\begin{frame}
+\titlepage
+\end{frame}
+
+\begin{frame}{Table of Contents}
+\tableofcontents
+\end{frame}
+
+\section{Web Learning API}
+
+\begin{frame}[fragile]
+\frametitle{Web Learning API}
+Inspired by 
+\href{https://github.com/Harry-Chen/thu-learn-lib}{https://github.com/Harry-Chen/thu-learn-lib}.
+
+\pause
+
+\begin{columns}
+  \column{.5\textwidth}
+  \begin{block}{TypeScript}
+    \begin{lstlisting}[language=Rust, morekeywords = {public,string,null}, basicstyle = \fontsize{5}{5}\ttfamily\color{BlackText}]
+public async getSemesterIdList(): Promise<string[]> {
+  const response = await this.#myFetch(URL.LEARN_SEMESTER_LIST());
+  const semesters = (await response.json()) as string[];
+  // sometimes web learning returns null, so confusing...
+  return semesters.filter((s) => s != null);
+}
+    \end{lstlisting}
+  \end{block}
+  \column{.5\textwidth}
+  \begin{block}{Rust}
+    ~\\
+    \begin{lstlisting}[language=Rust, basicstyle = \fontsize{5}{5}\ttfamily\color{BlackText}]
+pub async fn semester_id_list(&self) -> Result<Vec<Id>> {
+  let res = self.0.get(SEMESTER_LIST).send().await?.json::<Vec<Option<String>>>().await?;
+  Ok(res.into_iter().filter_map(|x| x).collect())
+}
+    \end{lstlisting}
+  \end{block}
+\end{columns}
+
+\pause
+
+~\\~\\
+
+Basic workflow: post your request, get a json or html reply, and extract data from it.
+\end{frame}
+
+\begin{frame}
+\frametitle{Features}
+\begin{enumerate}
+  \item Better format checking \& error handling.
+  \item More functionalities: submitting homework, manipulating course discussions, etc.
+  \item Similar asynchronous API.
+  
+  \pause
+  
+  ... But there are more to consider, due to the difference in the nature of these two languages.
+\end{enumerate}
+\end{frame}
+
+\section{FUSE with Rust}
+
+\begin{frame}[fragile]
+\frametitle{The fuse-rs Library}
+
+\href{https://github.com/zargony/fuse-rs}{https://github.com/zargony/fuse-rs}
+\pause
+~\\~\\
+User-defined file system operations is abstracted by a Rust trait:
+
+\begin{lstlisting}[language=Rust,morendkeywords={Path,OsStr}]
+pub trait Filesystem {
+  /// Initialize filesystem.
+  /// Called before any other filesystem method.
+  fn init(&mut self, req: &Request) -> Result<(), c_int> {
+    Ok(())
+  }
+  ...
+}
+
+pub fn mount<FS: Filesystem, P: AsRef<Path>>(filesystem: FS, mountpoint: P, options: &[&OsStr]);
+\end{lstlisting}
+
+\pause
+
+\begin{quote}
+  "fuse-rs does not just provide bindings, it is a rewrite of the original FUSE C library to fully take advantage of Rust's architecture."
+\end{quote}
+
+\end{frame}
+
+\begin{frame}
+\frametitle{The fuse-rs Library}
+How does FUSE work:
+
+\pause
+\begin{enumerate}
+  \item The \key{kernel driver} that registers as a filesystem and forwards operations into a communication channel to a userspace process that handles them.
+  \item The \key{userspace library} that helps the userspace process to establish and run communication with the kernel driver.
+  \item The \key{userspace implementation} that actually processes the filesystem operations.
+\end{enumerate}
+
+\pause
+fuse-rs is \key{not} built upon libfuse, instead, it is a \key{replacement} of libfuse.
+
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Features}
+
+Pros:
+
+\begin{enumerate}
+  \pause \item Easy access to private data:
+  
+  \lstinline[language = Rust]|&mut self| v.s. \lstinline[language=C++]|struct fuse_context *fuse_get_context(void);|
+  
+  Actually many perfer using global variables...
+  
+  \pause \item No need for path parsing:
+  
+  \lstinline[language = Rust,  basicstyle = \fontsize{6}{6}\ttfamily\color{BlackText}]|fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry)| v.s. \lstinline[language=C++, basicstyle = \fontsize{6}{6}\ttfamily\color{BlackText}]|int (*open)(const char *, struct fuse_file_info *)|
+\end{enumerate}
+
+\pause Cons:
+
+\begin{enumerate}
+  \pause \item Lack of documentation:
+  
+  \begin{quote}
+"The readdir implementation ignores the offset parameter, and passes zero to the filler function's offset. The filler function will not return '1' (unless an error happens), so the whole directory is read in a single readdir operation."
+  \end{quote}
+  
+  \pause \item Other small bugs.
+\end{enumerate}
+\end{frame}
+
+\section{Implementation Note}
+
+\begin{frame}[fragile]
+\frametitle{Run Asynchronous Code in Synchronous Context}
+Usually we use procedural macro \lstinline[language=Rust]|#[tokio::main]| to mark the entry of an asynchronous application, e.g., a web server. But the essence of FUSE has limit our functions to be synchronous.
+\pause ~\\~\\
+Manually submit an asynchronous task to a runtime and wait for the result:
+
+\begin{lstlisting}[language=Rust, basicstyle = \fontsize{8}{8}\ttfamily\color{BlackText}]
+self.runtime.block_on(client.discussion_replies(course, discussion, board))
+\end{lstlisting}
+\pause
+But we can still benefit form asynchronous code: both inside and outside the web learning API we can simultaneously perform multiple requests.
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Input Password}
+In my design, you input your password when you make a directory with its name as the student id in the mounted directory.
+\pause ~\\~\\
+The thing is, how can you input your password in the \lstinline|mkdir| process, instead of the FUSE process?
+\pause ~\\~\\
+Use procfs!
+~\\~\\
+\href{https://man7.org/linux/man-pages/man5/proc.5.html}{https://man7.org/linux/man-pages/man5/proc.5.html}
+
+\begin{quote}
+"/proc/[pid]/fd/: This is a subdirectory containing one entry for each file which the process has open, named by its file descriptor, and which is a symbolic link to the actual file. Thus, 0 is standard input, 1 standard output, 2 standard error, and so on."
+\end{quote}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Upload File}
+The problem is that you may have to perform a filesystem operation inside your user-defined filesystem operation...
+\pause ~\\~\\
+\href{https://linux.die.net/man/3/fuse}{https://linux.die.net/man/3/fuse}
+~\\~\\
+\begin{quote}
+"Note that single-threaded mode also means that you will not have to worry about reentrancy, though you will have to worry about recursive lookups. In single-threaded mode, FUSE holds a global lock on your filesystem, and will wait for one callback to return before calling another. This can lead to deadlocks, if your script makes any attempt to access files or directories in the filesystem it is providing."
+\end{quote}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Upload File}
+Solution: finish current operation, and perform the filesystem operation in another thread.
+
+\begin{lstlisting}[language=Rust]
+self.runtime.spawn(async move {
+  ...
+  let dir = Dir::open(format!("/proc/{}/cwd", pid))?;
+  let mut file = dir.open_file(path)?;
+  ...
+});
+\end{lstlisting}
+
+\pause
+
+Disadvantage: it is not possible to know whether this operation will succeed when it is finished, so we cannot report it to the user either.
+\end{frame}
+
+\section{Conclusion}
+
+\begin{frame}[fragile]
+\frametitle{Rust is both good at CRUD...}
+
+\begin{lstlisting}[language=Rust, basicstyle = \fontsize{8}{8}\ttfamily\color{BlackText}]
+#[derive(Debug, Deserialize)]
+pub struct Course {
+  #[serde(rename = "wlkcid")] pub id: Id,
+  #[serde(rename = "kcm")] pub name: String,
+  #[serde(rename = "ywkcm")] pub english_name: String,
+  ...
+}
+
+pub async fn course_list(&self, semester: IdRef<'_>) -> Result<Vec<Course>> {
+  let mut res = self.0.get(&COURSE_LIST(semester)).send().await?.json::<JsonWrapper1<Course>>().await?.resultList;
+  try_join_all(res.iter_mut().map(async move |x| {
+    x.time_location = self.0.get(&COURSE_TIME_LOCATION(&x.id)).send().await?.json().await?;
+    OK
+  })).await?;
+  Ok(res)
+}
+\end{lstlisting}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{...and system programming.}
+\begin{lstlisting}[language=Rust]
+fn get_password(pid: u32) -> io::Result<String> {
+  let mut stdout = OpenOptions::new().write(true).open(format!("/proc/{}/fd/1", pid))?;
+  stdout.write_all("password: ".as_bytes())?;
+  stdout.flush()?;
+  let mut stdin = BufReader::new(File::open(format!("/proc/{}/fd/0", pid))?);
+  let mut password = String::new();
+  stdin.read_line(&mut password)?;
+  Ok(password.trim().to_owned())
+}
+\end{lstlisting}
+\end{frame}
+
+\begin{frame}
+\begin{center}
+\huge\color{theme}
+Thanks!
+
+\vspace{.5cm}
+Q \& A
+\end{center}
+\end{frame}
+
+\end{document}
