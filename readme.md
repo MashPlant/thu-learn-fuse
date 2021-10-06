@@ -1,10 +1,36 @@
-2020春存储技术基础大作业，实现一个网络学堂映射的用户态文件系统，只支持Linux。
+[Tsinghua Web Learning](https://learn.tsinghua.edu.cn/) mapped filesystem. Course project for Storage System 2020 Spring.
 
-请follow [fuse-rs](https://github.com/zargony/fuse-rs)的安装教程，安装好必要的包之后执行：
+It only supports Linux. Please follow the installation guide in [fuse-rs](https://github.com/zargony/fuse-rs) to install required packages first.
 
-```bash
-$ mkdit <the folder to mount>
-$ cargo run -- <the folder to mount>
+Assume the folder to mount is `web-learn`.
+
+```
+$ mkdir web-learn
+$ cargo run -- web-learn
 ```
 
-即可在`<the folder to mount>`中使用网络学堂。有的文件浏览器不能正常显示里面的文件，经测试，`dolphin`是可以的，`thunar`是不行的，你也可以尝试装别的试试看，我并不理解其中的机理。
+Now you can open another terminal and work in the folder `web-learn`.
+
+```
+$ cd web-learn
+$ mkdir <student id>
+<enter password>
+$ cd <student id>
+# Now play with Tsinghua Web Learning in the terminal. 
+```
+
+The filesystem is organized as a tree of `<semester>/<course>/[homework|announcement|file|discussion]>` (in Chinese, `[作业|通知|文件|讨论]`).
+
+You can also use file managers such as [Dolphin](https://apps.kde.org/dolphin/) in the folder.
+
+To terminate and unmount the mapped filesystem:
+
+```
+# $ mkdir web-learn
+# $ cargo run -- web-learn
+<Enter Ctrl + C>
+$ fusermount -u web-learn
+$ rmdir web-learn
+```
+
+For more details, please refer to [report.pdf](report/report.pdf) for a (Chinese) project report。
